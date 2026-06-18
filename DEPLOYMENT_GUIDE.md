@@ -2,7 +2,7 @@
 
 This guide walks through deploying EventPulse to Kubernetes step by step, starting with PostgreSQL.
 
-**Status**: Phase 3 — Application Services Deployment  
+**Status**: Phase 5 — Horizontal Pod Autoscaling  
 **Branch**: kubernetes-upgrade  
 **Target**: Production-ready Kubernetes setup
 
@@ -1112,7 +1112,601 @@ kubectl get pods -n eventpulse
 kubectl get service -n eventpulse
 ```
 
-**Next**: Phase 4 — Prometheus & Grafana deployment (monitoring)
+---
+
+## Phase 4: NGINX Ingress Deployment
+
+NGINX Ingress Controller provides a single HTTP entrypoint for all EventPulse API endpoints. Instead of accessing api-gateway directly (port 8080), clients connect to the Ingress (port 80/443).
+
+### Prerequisites
+
+- All services deployed: PostgreSQL, Kafka, Application Services (Phases 1-3)
+- Kubernetes cluster with Ingress support (most distributions include this)
+- kubectl configured
+
+### Step 1: Deploy NGINX Ingress Controller
+
+The NGINX Ingress Controller runs in the `ingress-nginx` namespace and manages all Ingress resources.
+
+```bash
+kubectl apply -f k8s/ingress/nginx-ingress-deployment.yaml
+```
+
+**What this creates**:
+- Namespace: ingress-nginx
+- ServiceAccount, ClusterRole, ClusterRoleBinding (RBAC)
+- Deployment: nginx-ingress-controller (2 replicas)
+- Service: nginx-ingress (LoadBalancer)
+- ConfigMap: nginx-config (NGINX settings)
+- IngressClass: nginx
+
+**Verify deployment**:
+```bash
+kubectl get deployment -n ingress-nginx
+kubectl rollout status deployment/nginx-ingress-controller -n ingress-nginx -w
+
+# Expected output:
+# deployment "nginx-ingress-controller" successfully rolled out
+```
+
+**Check pods**:
+```bash
+kubectl get pods -n ingress-nginx
+# Expected: 2 pods, both READY 1/1, STATUS Running
+```
+
+**Check service**:
+```bash
+kubectl get service -n ingress-nginx nginx-ingress
+# Expected: LoadBalancer service on ports 80 (HTTP) and 443 (HTTPS)
+```
+
+### Step 2: Deploy EventPulse Ingress
+
+The Ingress resource routes external traffic to the API Gateway service.
+
+```bash
+kubectl apply -f k8s/ingress/eventpulse-ingress.yaml
+```
+
+**What this creates**:
+- Ingress resource: eventpulse-ingress
+- Routes: /events, /alerts, /alert, /health, /metrics → api-gateway:8080
+- CORS enabled (cross-origin requests allowed)
+- Rate limiting (100 req/sec per IP)
+- Path-based routing (all paths go to same backend)
+
+**Verify Ingress**:
+```bash
+kubectl get ingress -n eventpulse
+# Expected output:
+# NAME                   CLASS   HOSTS   ADDRESS       PORTS   AGE
+# eventpulse-ingress     nginx   *       10.244.x.x    80      10s
+
+kubectl describe ingress eventpulse-ingress -n eventpulse
+# Should show all 5 paths pointing to api-gateway:8080
+```
+
+---
+
+## Verification: Ingress Routing
+
+### Step 1: Port-Forward for Local Testing
+
+For local/minikube environments, use port-forward to access the Ingress:
+
+```bash
+kubectl port-forward -n ingress-nginx svc/nginx-ingress 8000:80
+```
+
+**Note**: Runs in foreground. Open another terminal for tests.
+
+### Step 2: Test Health Endpoint
+
+```bash
+curl -v http://localhost:8000/health
+```
+
+**Expected output**:
+```
+HTTP/1.1 200 OK
+Content-Type: application/json
+...
+{"status":"ok","service":"api-gateway","timestamp":"..."}
+```
+
+### Step 3: Test Event Publication
+
+```bash
+curl -X POST http://localhost:8000/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "ingress_test",
+    "event_type": "purchase",
+    "amount": 75000
+  }'
+```
+
+**Expected output**:
+```json
+{"message":"Event Published"}
+```
+
+### Step 4: Test Alert Retrieval
+
+```bash
+curl http://localhost:8000/alerts | jq .
+```
+
+**Expected output**:
+```json
+[
+  {
+    "id": 1,
+    "user_id": "ingress_test",
+    "risk_score": 90,
+    "message": "HIGH RISK TRANSACTION DETECTED",
+    "created_at": "..."
+  }
+]
+```
+
+### Step 5: Test CORS
+
+```bash
+curl -i -X OPTIONS http://localhost:8000/events \
+  -H "Origin: http://example.com" \
+  -H "Access-Control-Request-Method: POST"
+```
+
+**Expected output** (200 OK with CORS headers):
+```
+HTTP/1.1 200 OK
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+```
+
+### Step 6: Test Rate Limiting
+
+```bash
+# Send 150 rapid requests (limit is 100/sec)
+for i in {1..150}; do curl -s http://localhost:8000/health & done
+wait
+```
+
+**Result**: Some requests may get 429 (Too Many Requests) if rate limit exceeded.
+
+---
+
+## Troubleshooting: Ingress
+
+### Pod not starting
+
+```bash
+kubectl logs -n ingress-nginx deployment/nginx-ingress-controller -f
+```
+
+**Common issues**:
+- RBAC permissions (check ServiceAccount bindings)
+- Image not available (check container runtime)
+- Port conflict (port 80/443 already in use)
+
+### Ingress shows no ADDRESS
+
+```bash
+kubectl describe ingress eventpulse-ingress -n eventpulse
+```
+
+**Causes**:
+- NGINX controller not ready (check controller logs)
+- IngressClass not found (verify `kubectl get ingressclass`)
+- Service backend missing (check `kubectl get service -n eventpulse api-gateway`)
+
+### Request timeout (504 Gateway Timeout)
+
+```bash
+curl -v http://localhost:8000/events
+```
+
+**Causes**:
+- API Gateway pod not running (check `kubectl get pods -n eventpulse`)
+- Service endpoint missing (check `kubectl get endpoints -n eventpulse api-gateway`)
+- Network unreachable (check NGINX logs)
+
+### 404 Not Found
+
+```bash
+curl -v http://localhost:8000/invalid-path
+```
+
+**Solution**:
+- Verify path in Ingress matches actual API endpoint
+- Check `kubectl describe ingress eventpulse-ingress -n eventpulse` for paths
+
+### CORS Errors
+
+**Solution**: Verify CORS annotations are applied
+```bash
+kubectl get ingress eventpulse-ingress -n eventpulse -o yaml | grep cors
+```
+
+Should show enabled CORS with `*` origin
+
+---
+
+## Cloud Deployment (AWS/GCP/Azure)
+
+### Get External Load Balancer IP
+
+```bash
+kubectl get service -n ingress-nginx nginx-ingress
+```
+
+After 2-5 minutes, `EXTERNAL-IP` will show the cloud-provided IP:
+
+```
+NAME            TYPE           CLUSTER-IP       EXTERNAL-IP      PORT(S)
+nginx-ingress   LoadBalancer   10.xxx.xxx.xxx   203.0.113.50     80:30xxx/TCP
+```
+
+**Access API**:
+```bash
+curl http://203.0.113.50/events
+curl http://203.0.113.50/alerts
+```
+
+### Enable HTTPS/TLS
+
+1. Create certificate Secret:
+```bash
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
+kubectl create secret tls eventpulse-tls --cert=cert.pem --key=key.pem -n eventpulse
+```
+
+2. Update eventpulse-ingress.yaml to enable TLS:
+```yaml
+spec:
+  tls:
+  - hosts:
+    - api.example.com
+    secretName: eventpulse-tls
+  rules:
+  - host: api.example.com
+    http:
+      paths:
+      - path: /events
+        backend:
+          service:
+            name: api-gateway
+            port:
+              number: 8080
+```
+
+3. Reapply:
+```bash
+kubectl apply -f k8s/ingress/eventpulse-ingress.yaml
+```
+
+---
+
+## Summary
+
+✅ NGINX Ingress Controller installed and running  
+✅ EventPulse Ingress routes all paths to API Gateway  
+✅ Single entrypoint on port 80 (or 443 with TLS)  
+✅ CORS and rate limiting configured  
+✅ Ready for production traffic  
+
+See **INGRESS_GUIDE.md** for detailed troubleshooting and advanced configuration.
+
+---
+
+## Phase 5: Horizontal Pod Autoscaling (HPA)
+
+Horizontal Pod Autoscaling automatically adjusts the number of pod replicas based on CPU utilization. Services scale from 2-10 replicas to handle variable workloads.
+
+### Prerequisites
+
+1. **Metrics Server** must be running:
+```bash
+kubectl get deployment -n kube-system metrics-server
+```
+
+If not found, install:
+```bash
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+```
+
+2. **CPU Requests** defined (already in deployments):
+```yaml
+resources:
+  requests:
+    cpu: 100m      # HPA calculates 70% of this = 70m threshold
+```
+
+### Step 1: Deploy API Gateway HPA
+
+```bash
+kubectl apply -f k8s/autoscaling/api-gateway-hpa.yaml
+```
+
+**Verify**:
+```bash
+kubectl get hpa -n eventpulse api-gateway-hpa
+# Expected output:
+# NAME                REFERENCE                 TARGETS      MINPODS  MAXPODS  REPLICAS  AGE
+# api-gateway-hpa     Deployment/api-gateway    45%/70%      2        10       2         10s
+```
+
+### Step 2: Deploy Analytics Service HPA
+
+```bash
+kubectl apply -f k8s/autoscaling/analytics-service-hpa.yaml
+```
+
+**Verify**:
+```bash
+kubectl get hpa -n eventpulse analytics-service-hpa
+```
+
+### Step 3: Deploy Alert Service HPA
+
+```bash
+kubectl apply -f k8s/autoscaling/alert-service-hpa.yaml
+```
+
+**Verify**:
+```bash
+kubectl get hpa -n eventpulse alert-service-hpa
+```
+
+### Step 4: View All HPAs
+
+```bash
+kubectl get hpa -n eventpulse
+```
+
+**Expected output**:
+```
+NAME                      REFERENCE                        TARGETS        MINPODS  MAXPODS  REPLICAS  AGE
+api-gateway-hpa           Deployment/api-gateway           45%/70%        2        10       2         1m
+analytics-service-hpa     Deployment/analytics-service     32%/70%        2        10       2         1m
+alert-service-hpa         Deployment/alert-service         28%/70%        2        10       2         1m
+```
+
+---
+
+## Verification: HPA Scaling
+
+### Monitor Current Status
+
+```bash
+kubectl get hpa -n eventpulse -w
+```
+
+This watches HPA status in real-time. Metrics appear after 30-60 seconds.
+
+### Check Pod Counts
+
+```bash
+kubectl get deployment -n eventpulse
+```
+
+**Current state** (2 replicas each):
+```
+NAME               READY  UP-TO-DATE  AVAILABLE
+api-gateway        2/2    2           2
+analytics-service  2/2    2           2
+alert-service      2/2    2           2
+```
+
+### View CPU Usage
+
+```bash
+kubectl top pods -n eventpulse -l tier=services
+```
+
+**Expected output**:
+```
+NAME                           CPU(cores)   MEMORY(Mi)
+api-gateway-xxxxx              45m          80Mi
+api-gateway-yyyyy              38m          75Mi
+analytics-service-aaaaa        62m          95Mi
+analytics-service-bbbbb        41m          88Mi
+alert-service-ccccc            25m          102Mi
+alert-service-ddddd            19m          99Mi
+```
+
+---
+
+## Load Testing: Force Scaling
+
+### Test 1: Generate Load with Apache Bench
+
+**Terminal 1**: Port-forward NGINX Ingress
+```bash
+kubectl port-forward -n ingress-nginx svc/nginx-ingress 8000:80
+```
+
+**Terminal 2**: Generate load (100 concurrent requests, 10,000 total)
+```bash
+ab -n 10000 -c 100 http://localhost:8000/health
+```
+
+**Terminal 3**: Watch HPA scaling
+```bash
+kubectl get hpa -n eventpulse -w
+```
+
+**Expected behavior** (watch Terminal 3):
+```
+api-gateway-hpa  Deployment/api-gateway  45%/70%  2  10  2  1m
+api-gateway-hpa  Deployment/api-gateway  95%/70%  2  10  2  2m   # CPU spiked!
+api-gateway-hpa  Deployment/api-gateway  95%/70%  2  10  3  2m   # Scaled to 3 pods
+api-gateway-hpa  Deployment/api-gateway  72%/70%  2  10  4  3m   # Scaled to 4 pods
+api-gateway-hpa  Deployment/api-gateway  68%/70%  2  10  4  4m   # Stabilized at 4
+```
+
+### Test 2: Send Events (Tests All Services)
+
+```bash
+# Terminal 1: Watch HPA
+kubectl get hpa -n eventpulse -w
+
+# Terminal 2: Send 1000 events rapidly
+for i in {1..1000}; do
+  curl -s -X POST http://localhost:8000/events \
+    -H "Content-Type: application/json" \
+    -d "{\"user_id\":\"user_$i\",\"event_type\":\"purchase\",\"amount\":$((50000 + RANDOM % 50000))}" &
+done
+wait
+```
+
+**Expected**: All services scale up as events flow through pipeline
+
+### Test 3: Monitor Scaling Events
+
+```bash
+kubectl get events -n eventpulse --sort-by='.lastTimestamp' | grep -i hpa
+```
+
+**Example output**:
+```
+eventpulse  Normal  SuccessfulRescale  2m  horizontal-pod-autoscaler  New size: 3; reason: cpu resource utilization (85%) above target (70%)
+eventpulse  Normal  SuccessfulRescale  1m  horizontal-pod-autoscaler  New size: 4; reason: cpu resource utilization (72%) above target (70%)
+```
+
+---
+
+## Scaling Verification
+
+### Upscaling (2 → More Replicas)
+
+1. Generate load (use Test 1 or 2 above)
+2. Confirm CPU increases
+3. Verify replica count increases
+
+```bash
+# Check current replicas
+kubectl get deployment api-gateway -n eventpulse
+# Should show READY > 2
+```
+
+### Downscaling (Many → 2 Replicas)
+
+1. Stop load generation (Ctrl+C in load test terminal)
+2. Wait 5-10 minutes for metrics to stabilize
+3. Confirm replicas gradually decrease
+
+```bash
+# Watch downscaling (after load stops)
+watch kubectl get deployment -n eventpulse
+
+# Timeline:
+# t=0min:   Stop load, still 5 pods (high CPU)
+# t=5min:   CPU drops below 70%, scaling begins
+# t=10min:  Replicas gradually reduce to 2 pods
+# t=15min:  Back to minimum (2 replicas)
+```
+
+### HPA Description
+
+```bash
+kubectl describe hpa api-gateway-hpa -n eventpulse
+```
+
+**Look for "Conditions"**:
+```
+Conditions:
+  Type            Status  Reason            Message
+  AbleToScale     True    SucceededGetResourceMetric  successfully obtained the metric
+  ScalingActive   True    ValidMetricsFound Available metrics found
+  ScalingLimited  False   DesiredWithinRange desired replica count within acceptable range
+```
+
+---
+
+## HPA Configuration Details
+
+### Current Settings (All Services)
+
+```yaml
+minReplicas: 2          # Never below 2 pods
+maxReplicas: 10         # Never above 10 pods
+targetCPU: 70%          # Scale when avg CPU > 70m (70% of 100m request)
+scaleUp: 1 pod/30s      # Add 1 pod every 30 seconds
+scaleDown: 1 pod/60s    # Remove 1 pod every 60 seconds (after 5 min stable)
+```
+
+### Tuning Scaling Behavior
+
+To make scaling **faster** (aggressive):
+```yaml
+scaleUp:
+  periodSeconds: 15      # Check more frequently
+  addPodsPerPeriod: 2    # Add 2 pods at once
+```
+
+To make scaling **slower** (conservative):
+```yaml
+scaleUp:
+  periodSeconds: 60      # Check less frequently
+  addPodsPerPeriod: 1    # Add 1 pod at a time
+scaleDown:
+  stabilization: 600s    # Wait 10 minutes before scaling
+```
+
+---
+
+## Troubleshooting HPA
+
+### Metrics show `<unknown>`
+
+```bash
+kubectl describe hpa api-gateway-hpa -n eventpulse
+# Should see: "FailedGetResourceMetric resource metrics not yet available"
+```
+
+**Solution**: Wait 1-2 minutes for Metrics Server to collect data
+
+### Pods don't scale even under high CPU
+
+**Verify Metrics Server**:
+```bash
+kubectl get deployment -n kube-system metrics-server
+kubectl get --raw /apis/metrics.k8s.io/v1beta1/namespaces/eventpulse/pods | jq .
+```
+
+**Verify HPA target**:
+```bash
+kubectl get hpa api-gateway-hpa -n eventpulse -o yaml | grep scaleTargetRef
+# Should match: Deployment/api-gateway
+```
+
+### Excessive scaling (pods constantly added/removed)
+
+**Cause**: Target CPU too close to current usage
+
+**Solution**: Increase target or stabilization window
+```yaml
+averageUtilization: 80  # Instead of 70
+scaleDown:
+  stabilizationWindowSeconds: 600  # 10 minutes instead of 5
+```
+
+---
+
+## Summary
+
+✅ HPAs deployed for all 3 services (2-10 replicas)  
+✅ Scaling based on CPU utilization (70% threshold)  
+✅ Load testing procedures documented  
+✅ Scaling verification step-by-step  
+✅ Troubleshooting guide included  
+
+See **AUTOSCALING_GUIDE.md** for comprehensive load testing and advanced tuning.
+
+**Next**: Phase 6 — Prometheus & Grafana (monitoring and dashboards)
 
 ---
 
