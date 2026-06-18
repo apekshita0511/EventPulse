@@ -19,3 +19,6 @@
 
 # logs
 *.log
+
+# scripts
+docs/generate_screenshots.py
