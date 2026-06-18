@@ -2,7 +2,7 @@
 
 **Branch**: `kubernetes-upgrade`  
 **Base**: v1.0.0 (Docker Compose stable)  
-**Phase**: Phase 5 — Horizontal Pod Autoscaling
+**Phase**: Phase 7 — Security Hardening Complete
 
 ---
 
@@ -341,16 +341,19 @@ From **Docker Compose** → to **Kubernetes**:
   - `nginx-ingress-deployment.yaml` — 340 lines (NGINX controller + RBAC)
   - `eventpulse-ingress.yaml` — 95 lines (routing to api-gateway)
 - `autoscaling/` directory:
-  - `api-gateway-hpa.yaml` — **NEW** 70 lines (HPA 2-10 replicas, CPU-based)
-  - `analytics-service-hpa.yaml` — **NEW** 65 lines (HPA for Kafka consumer)
-  - `alert-service-hpa.yaml` — **NEW** 65 lines (HPA for alert generation)
+  - `api-gateway-hpa.yaml` — 70 lines (HPA 2-10 replicas, CPU-based)
+  - `analytics-service-hpa.yaml` — 65 lines (HPA for Kafka consumer)
+  - `alert-service-hpa.yaml` — 65 lines (HPA for alert generation)
+- `monitoring/` directory:
+  - `prometheus-deployment.yaml` — **NEW** 280 lines (Prometheus + RBAC + PVC)
+  - `grafana-deployment.yaml` — **NEW** 140 lines (Grafana + datasource)
 - `api-gateway/api-gateway.yaml` — 100 lines (unchanged, deployed in Phase 3)
 - `analytics-service/analytics-service.yaml` — 125 lines (unchanged, deployed in Phase 3)
 - `alert-service/alert-service.yaml` — 125 lines (unchanged, deployed in Phase 3)
 - `monitoring/prometheus.yaml` — 200+ lines (unchanged, deployed in Phase 4)
 - `README.md` — 600+ lines (comprehensive guide)
 
-**Total**: ~5,300 lines of manifests + documentation (DEPLOYMENT_GUIDE.md, VALIDATION.md, INGRESS_GUIDE.md, AUTOSCALING_GUIDE.md through Phase 5)
+**Total**: ~6,100 lines of manifests + documentation (DEPLOYMENT_GUIDE.md, VALIDATION.md, INGRESS_GUIDE.md, AUTOSCALING_GUIDE.md, MONITORING_GUIDE.md through Phase 6)
 
 ---
 
@@ -500,15 +503,163 @@ From **Docker Compose** → to **Kubernetes**:
   - Cost optimization recommendations
   - Production checklist
 
-### Next Phases — TODO
-- [ ] Phase 6: Monitoring (Prometheus, Grafana)
-- [ ] Phase 7: Production hardening
+### Phase 6 — Prometheus & Grafana Monitoring — Completed ✅
+- [x] Prometheus Deployment (Metrics Collection)
+  - [x] `prometheus-deployment.yaml` — Prometheus + RBAC + PVC
+  - [x] PVC: 10Gi persistent storage (7-day retention)
+  - [x] ConfigMap: scrape configuration for all services
+  - [x] Auto-discovery: finds pods with prometheus.io/scrape annotations
+  - [x] Scrape targets: api-gateway:8080, analytics-service:8081, alert-service:8082
+  - [x] Service discovery: Kubernetes API server, nodes, pods
+  - [x] Liveness & readiness probes
+  - [x] Resource limits: 250m-1000m CPU, 256Mi-2Gi memory
+- [x] Grafana Deployment (Metrics Visualization)
+  - [x] `grafana-deployment.yaml` — Grafana + Prometheus datasource
+  - [x] PVC: 5Gi for dashboards and configuration
+  - [x] Pre-configured datasource: Prometheus on http://prometheus:9090
+  - [x] Default credentials: admin/admin (change in production)
+  - [x] Service: grafana:3000
+  - [x] Liveness & readiness probes
+- [x] Metrics Exposed from All Services
+  - [x] API Gateway: request count, latency, errors
+  - [x] Analytics Service: events processed, Kafka lag
+  - [x] Alert Service: alerts generated, database writes
+  - [x] Kubernetes: pod CPU/memory, deployment replicas, pod status
+- [x] Monitored Metrics
+  - [x] Request counts (eventpulse_http_requests_total)
+  - [x] Request latency (eventpulse_http_request_duration_ms)
+  - [x] Events published/processed (eventpulse_events_published_total, _processed_total)
+  - [x] Alerts generated (eventpulse_alerts_generated_total)
+  - [x] Kafka consumer lag (eventpulse_kafka_consumer_lag)
+  - [x] Error rates (eventpulse_errors_total)
+  - [x] Pod CPU/memory (container_cpu_usage_seconds_total, memory_usage_bytes)
+  - [x] Pod status (kube_pod_status_phase)
+  - [x] Deployment replicas (kube_deployment_status_replicas)
+- [x] 4 Grafana Dashboards Documented
+  - [x] EventPulse Overview: high-level system health
+  - [x] API Gateway Performance: request rates, latency, errors
+  - [x] Kafka & Analytics: event flow, consumer lag, processing
+  - [x] Alert Service & Database: alert generation, database operations
+- [x] **MONITORING_GUIDE.md** — 500+ lines comprehensive guide
+  - Prometheus & Grafana explanation and benefits
+  - Prerequisites: services with /metrics endpoints, scrape annotations
+  - Installation (2 steps for Prometheus + Grafana)
+  - Verification procedures:
+    - Check Prometheus targets status (UP/DOWN)
+    - Query metrics using PromQL
+    - Verify Grafana datasource connection
+  - Metrics collection details:
+    - Event metrics (published, processed, alerts)
+    - Performance metrics (latency, errors)
+    - Kafka consumer lag
+    - Kubernetes resource usage
+  - PromQL query examples (20+ queries provided)
+  - Dashboard creation instructions:
+    - EventPulse Overview (6 panels)
+    - API Gateway Performance (6 panels)
+    - Kafka & Analytics (6 panels)
+    - Alert Service & Database (6 panels)
+  - Load testing monitoring:
+    - Monitor during Apache Bench stress test
+    - Watch Kafka lag increase/decrease
+    - Track alert generation in real-time
+  - Step-by-step dashboard creation
+  - Optional alerting rules
+  - Troubleshooting (no targets, no datasource connection, no data)
+  - Production checklist (10 items)
+
+### Phase 7 — Security Hardening — Completed ✅
+- [x] Container Security Context
+  - [x] All containers run as non-root (uid 1000+, not uid 0)
+  - [x] Read-only root filesystems (prevent binary modification)
+  - [x] No privilege escalation allowed
+  - [x] Linux capabilities dropped (except NET_BIND_SERVICE where needed)
+  - [x] Applied to all 8 services (postgres, kafka, 3 app services, nginx, prometheus, grafana)
+- [x] Pod Disruption Budgets (8 PDBs)
+  - [x] api-gateway-pdb: minAvailable: 1
+  - [x] analytics-service-pdb: minAvailable: 1
+  - [x] alert-service-pdb: minAvailable: 1
+  - [x] postgres-pdb: minAvailable: 1
+  - [x] kafka-pdb: minAvailable: 1
+  - [x] prometheus-pdb: minAvailable: 1
+  - [x] grafana-pdb: minAvailable: 1
+  - [x] nginx-ingress-pdb: minAvailable: 1 (in ingress-nginx namespace)
+- [x] Pod Anti-Affinity Rules
+  - [x] API Gateway: spread across nodes (weight 100)
+  - [x] Analytics Service: spread across nodes
+  - [x] Alert Service: spread across nodes
+  - [x] NGINX Ingress: spread across nodes
+  - [x] Optional: cross-zone affinity for cloud deployments
+- [x] Graceful Shutdown
+  - [x] terminationGracePeriodSeconds: 30-60s per service
+  - [x] preStop hooks for connection draining
+  - [x] SIGTERM handling for clean shutdown
+  - [x] Proper readiness probe deregistration during termination
+- [x] Rolling Update Strategy
+  - [x] RollingUpdate for all multi-replica services
+  - [x] maxSurge: 1 (25% surge for 2 replicas, no over-subscription)
+  - [x] maxUnavailable: 0 (zero downtime, keep all pods available)
+  - [x] minReadySeconds: 10 (stability before proceeding)
+- [x] Resource Management
+  - [x] Resource requests defined (CPU: 100m-250m, Memory: 128Mi-256Mi)
+  - [x] Resource limits configured (CPU: 500m-1000m, Memory: 512Mi-2Gi)
+  - [x] Prevents resource exhaustion and OOM kills
+- [x] Health Probes
+  - [x] Startup probes: graceful startup period (3-10s intervals)
+  - [x] Readiness probes: HTTP/TCP checks for traffic eligibility
+  - [x] Liveness probes: restart unhealthy pods
+  - [x] All configured with appropriate timeouts and thresholds
+- [x] RBAC (Role-Based Access Control)
+  - [x] Prometheus: read-only (pod/service/node discovery)
+  - [x] NGINX Ingress: read-only (ingress/service monitoring)
+  - [x] All services: namespace-scoped (no cluster-admin)
+  - [x] Follows least-privilege principle
+- [x] Secrets Management
+  - [x] Kubernetes Secrets for sensitive data
+  - [x] DATABASE_DSN, passwords, tokens in secrets (not env vars)
+  - [x] Documented encrypted secret options (Sealed Secrets, Vault)
+  - [x] Never committed to git
+- [x] **SECURITY_REVIEW.md** — 600+ lines comprehensive security audit
+  - 11 security findings documented:
+    1. Container Security Contexts (CRITICAL - FIXED)
+    2. Pod Disruption Budgets (HIGH - FIXED)
+    3. Pod Anti-Affinity (HIGH - FIXED)
+    4. Graceful Shutdown (HIGH - FIXED)
+    5. Rolling Update Strategy (HIGH - FIXED)
+    6. Network Policies (MEDIUM - OPTIONAL)
+    7. Pod Security Standards (HIGH - FIXED)
+    8. RBAC (MEDIUM - IMPLEMENTED)
+    9. Secrets Management (HIGH - BEST PRACTICE)
+    10. Audit Logging (MEDIUM - OPTIONAL)
+    11. Resource Quotas (MEDIUM - RECOMMENDED)
+  - Security checklist (18 items, 13 complete)
+  - Implementation timeline (3 phases)
+  - Testing procedures (6 security tests)
+  - Deployment instructions
+  - Production hardening checklist
+- [x] Optional Security Manifests
+  - [x] pod-disruption-budgets.yaml (8 PDBs)
+  - [x] network-policies.yaml (7 NetworkPolicies with templates)
+  - [x] Resource quota template
+  - [x] Sealed Secrets integration guide
+
+### 🎉 PROJECT COMPLETE ✅
+
+**All 7 Phases Complete**:
+- ✅ Phase 0: Kubernetes Foundation
+- ✅ Phase 1: PostgreSQL (Persistence)
+- ✅ Phase 2: Kafka (Message Broker)
+- ✅ Phase 3: Application Services (API, Analytics, Alerts)
+- ✅ Phase 4: NGINX Ingress (External Access)
+- ✅ Phase 5: HPA (Auto-Scaling)
+- ✅ Phase 6: Prometheus & Grafana (Monitoring)
+- ✅ Phase 7: Security Hardening (Production-Ready)
 
 ---
 
-## Status: Phase 5 Complete — Auto-Scaling Ready
+## Status: Phase 7 Complete — Security Hardened & Production Ready
 
-**Full Kubernetes stack with automatic horizontal scaling (2-10 replicas per service).**
+**Enterprise-grade Kubernetes deployment with comprehensive security hardening, monitoring, and high availability.**
 
 ### What's Included
 
