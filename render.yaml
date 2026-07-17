@@ -32,11 +32,9 @@ services:
 
   - type: web
     name: eventpulse-dashboard
-    runtime: static
-    buildCommand: echo "static"
-    staticPublishPath: ./services/dashboard
-    headers:
-      - path: /*
-        name: Cache-Control
-        value: no-cache
+    runtime: docker
+    dockerfilePath: ./services/dashboard/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /
     autoDeploy: true
