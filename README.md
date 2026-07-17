@@ -12,27 +12,41 @@ EventPulse is a production-grade event-driven fraud detection platform built wit
 
 Transaction events are ingested in real-time through REST APIs, scored by a streaming analytics service using machine learning pipelines, converted into fraud alerts, and persisted in PostgreSQL. The entire system is containerized with Docker and orchestrated on Kubernetes with full observability through Prometheus metrics and Grafana dashboards.
 
-## Live Demo
+## Live Demo on Render
 
-### Grafana — Real-Time Metrics Dashboard
+**Try the live deployment:**
+- **📊 Interactive Dashboard**: https://eventpulse-dashboard-se2p.onrender.com/
+- **🤖 ML Service**: https://eventpulse-ml-3czt.onrender.com
+
+**Quick Start:**
+1. Open the dashboard URL above
+2. Paste the ML Service URL into the "ML Service URL" field
+3. Click "Connect"
+4. Submit a transaction to see real-time fraud detection with SHAP explanations
+
+---
+
+### Local Screenshots
+
+#### Grafana — Real-Time Metrics Dashboard
 
 ![Grafana Dashboard](docs/screenshots/grafana-dashboard-1.png)
 
 ![Grafana Dashboard — Total Alerts](docs/screenshots/grafana-dashboard-2.png)
 
-### Fraud Alerts API — Real-Time Detection
+#### Fraud Alerts API — Real-Time Detection
 
 ![Alerts API](docs/screenshots/alerts-api.png)
 
-### Load Test Results — 818 Transactions, 0 Failures, P99 < 48ms
+#### Load Test Results — 818 Transactions, 0 Failures, P99 < 48ms
 
 ![Load Test Results](docs/screenshots/load-test-results.png)
 
-### Prometheus — Metrics (Table)
+#### Prometheus — Metrics (Table)
 
 ![Prometheus Table](docs/screenshots/prometheus-table.png)
 
-### Prometheus — Metrics (Graph)
+#### Prometheus — Metrics (Graph)
 
 ![Prometheus Graph](docs/screenshots/prometheus-graph.png)
 
